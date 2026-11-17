@@ -182,6 +182,34 @@ impl<'a> Stream<'a> {
         })
     }
 
+    /// PdfCraft patch (48): the reduction a JPEG image stream is decoded at for `image_params`
+    /// (`filter::dct_reduction`), or 1 when its colours must be the full decode's: `/ColorTransform
+    /// 0`, or, read from the JPEG's markers when it is the stream's one filter and the stream isn't
+    /// encrypted, an Adobe APP14 marker or four components. The decode makes the same checks on the
+    /// JPEG itself, so this only keeps draws at different sizes from keying separate full decodes.
+    #[cfg(feature = "images")]
+    pub fn dct_reduction(&self, image_params: &ImageDecodeParams) -> u32 {
+        let factor = crate::filter::dct_reduction(image_params);
+        if factor == 1 {
+            return 1;
+        }
+        let FiltersAndParams { filters, params } = self.filters_and_params();
+        let color_transform = matches!(filters.last(), Some(Filter::DctDecode))
+            .then(|| params.last()?.get::<u8>(crate::object::dict::keys::COLOR_TRANSFORM))
+            .flatten();
+        if color_transform == Some(0) {
+            return 1;
+        }
+        let ctx = self.dict.ctx();
+        if matches!(filters.as_slice(), [Filter::DctDecode])
+            && !ctx.xref().needs_decryption(ctx)
+            && crate::filter::full_colour_only(self.data, color_transform)
+        {
+            return 1;
+        }
+        factor
+    }
+
     /// Return the filters that are applied to the stream.
     pub fn filters(&self) -> SmallVec<[Filter; 2]> {
         self.filters_and_params().filters

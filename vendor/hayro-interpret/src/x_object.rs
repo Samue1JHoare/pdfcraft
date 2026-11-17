@@ -702,7 +702,7 @@ impl<'a> ImageXObject<'a> {
             // PdfCraft patch (107): a JPEG image's decode depends on the target only through the
             // reduction it is decoded at, so draws that share one share the decode.
             jpeg_reduction: if uses_dct(&self.stream) {
-                hayro_syntax::dct_reduction(&self.decode_params(target_dimension))
+                self.stream.dct_reduction(&self.decode_params(target_dimension))
             } else {
                 1
             },

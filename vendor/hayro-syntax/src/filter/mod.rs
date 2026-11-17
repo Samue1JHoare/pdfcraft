@@ -9,6 +9,8 @@ mod dct;
 // PdfCraft patch (48): JPEG images decoded at the size they are drawn at.
 #[cfg(feature = "images")]
 pub use dct::{ScaledJpeg, ScaledJpegDecoder, dct_reduction};
+#[cfg(feature = "images")]
+pub(crate) use dct::full_colour_only;
 #[cfg(all(feature = "images", feature = "std"))]
 pub use dct::set_scaled_jpeg_decoder;
 #[cfg(feature = "images")]

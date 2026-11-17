@@ -11,16 +11,18 @@ use zune_jpeg::zune_core::options::DecoderOptions;
 /// PdfCraft patch (48): how many times smaller, on each side, a JPEG image is decoded for
 /// `params.target_dimension`: 8, 4 or 2, the largest reduction whose size (each side divided by it,
 /// rounded up) is still at least the size the image is drawn at; 1 (the full size) with no target,
-/// for an `/Indexed` image (averaging palette indices makes other colours) and for anything but
-/// 8-bit samples of 1, 3 or 4 components. The decoded-image cache keys a JPEG image by this, so
-/// draws that share a reduction share one decode, and a smaller decode never serves a larger draw.
+/// for an `/Indexed` image (averaging palette indices makes other colours), for a four-component
+/// (CMYK or YCCK) image, whose colours must be the full decode's exactly, and for anything but
+/// 8-bit samples of 1 or 3 components. The decoded-image cache keys a JPEG image by this (through
+/// `Stream::dct_reduction`, which also reads the JPEG's own markers), so draws that share a
+/// reduction share one decode, and a smaller decode never serves a larger draw.
 pub fn dct_reduction(params: &ImageDecodeParams) -> u32 {
     let Some((tw, th)) = params.target_dimension else {
         return 1;
     };
     if params.is_indexed
         || params.bpc.is_some_and(|b| b != 8)
-        || params.num_components.is_some_and(|n| !matches!(n, 1 | 3 | 4))
+        || params.num_components.is_some_and(|n| !matches!(n, 1 | 3))
     {
         return 1;
     }
@@ -128,8 +130,13 @@ pub(crate) fn decode(
     }
 
     // PdfCraft patch (48): drawn much smaller than it is, a grey or JFIF colour JPEG is decoded
-    // at that reduction by the host's decoder, if there is one and it can.
-    let factor = dct_reduction(image_params);
+    // at that reduction by the host's decoder, if there is one and it can. A CMYK, YCCK, Adobe
+    // or `/ColorTransform 0` JPEG never is, nor averaged down: its colours are the full decode's.
+    let factor = if matches!(input_color_space, CMYK | ColorSpace::YCCK) || full_colour_only(&data, color_transform) {
+        1
+    } else {
+        dct_reduction(image_params)
+    };
     if factor > 1
         && matches!(data, Cow::Borrowed(_))
         && let Some(decoder_fn) = scaled_jpeg_decoder()
@@ -166,9 +173,9 @@ pub(crate) fn decode(
     let mut width = decoder.dimensions().unwrap().0 as u32;
     let mut height = decoder.dimensions().unwrap().1 as u32;
 
-    // PdfCraft patch (48): decoded in full here (no host decoder, or a JPEG it isn't handed:
-    // CMYK, YCCK, Adobe, `/ColorTransform 0`, …), and averaged down by the same reduction, in the
-    // decoded samples, so each output sample is the mean of full-decode samples and only the
+    // PdfCraft patch (48): decoded in full here (no host decoder, one that refused, or a grey or
+    // YCbCr JPEG it isn't handed: 12-bit, lossless, arithmetic-coded, a size the dictionary
+    // contradicts), and averaged down by the same reduction, in the decoded samples, so each output sample is the mean of full-decode samples and only the
     // reduced image is kept. Samples that don't fill the decoded size are kept as they are.
     if factor > 1
         && let Some(channels) = (width as usize)
@@ -316,12 +323,22 @@ fn shrink(
     Some((out, ow as u32, oh as u32))
 }
 
-/// PdfCraft patch (48): what [`host_components`] reads from a JPEG's markers up to its first scan.
+/// PdfCraft patch (48): whether the JPEG `data` must be decoded at full size so its colours are
+/// exactly the full decode's: `/ColorTransform 0`, an Adobe APP14 marker (its own colour
+/// transform), four components (CMYK or YCCK), or markers that can't be read before the scan.
+pub(crate) fn full_colour_only(data: &[u8], color_transform: Option<u8>) -> bool {
+    color_transform == Some(0) || read_header(data).is_none_or(|h| h.adobe || h.components == 4)
+}
+
+/// PdfCraft patch (48): what [`host_components`] and [`full_colour_only`] read from a JPEG's
+/// markers up to its first scan.
 struct JpegHeader {
     /// The frame marker's second byte (0xC0 baseline, 0xC1 extended, 0xC2 progressive, …).
     sof: u8,
     /// Bits per sample.
     precision: u8,
+    /// Components in the frame.
+    components: u8,
     /// Whether an Adobe APP14 segment (its own colour transform) comes before the scan.
     adobe: bool,
 }
@@ -354,15 +371,15 @@ fn read_header(data: &[u8]) -> Option<JpegHeader> {
         let segment = data.get(i + 4..i.checked_add(2)?.checked_add(seg_len)?)?;
         match marker {
             0xC0..=0xCF if marker != 0xC4 && marker != 0xC8 && marker != 0xCC => {
-                frame.get_or_insert((marker, *segment.first()?));
+                frame.get_or_insert((marker, *segment.first()?, *segment.get(5)?));
             }
             0xEE if segment.starts_with(b"Adobe") => adobe = true,
             _ => {}
         }
         i = i.checked_add(2)?.checked_add(seg_len)?;
     }
-    let (sof, precision) = frame?;
-    Some(JpegHeader { sof, precision, adobe })
+    let (sof, precision, components) = frame?;
+    Some(JpegHeader { sof, precision, components, adobe })
 }
 
 fn maybe_patch_jpeg_dimensions<'a>(
@@ -478,7 +495,8 @@ mod tests {
         assert_eq!(dct_reduction(&ImageDecodeParams { is_indexed: true, ..params(2480, 3508, small) }), 1);
         assert_eq!(dct_reduction(&ImageDecodeParams { bpc: Some(16), ..params(2480, 3508, small) }), 1);
         assert_eq!(dct_reduction(&ImageDecodeParams { num_components: Some(2), ..params(2480, 3508, small) }), 1);
-        assert_eq!(dct_reduction(&ImageDecodeParams { num_components: Some(4), ..params(2480, 3508, small) }), 8);
+        assert_eq!(dct_reduction(&ImageDecodeParams { num_components: Some(4), ..params(2480, 3508, small) }), 1);
+        assert_eq!(dct_reduction(&ImageDecodeParams { num_components: Some(3), ..params(2480, 3508, small) }), 8);
         assert_eq!(dct_reduction(&params(0, 3508, small)), 1);
         assert_eq!(dct_reduction(&params(2480, 3508, Some((0, 10)))), 1);
     }
@@ -523,6 +541,25 @@ mod tests {
         let mut adobe = jfif(0xC0, 8);
         adobe.splice(2..2, [0xFF, 0xEE, 0, 14, b'A', b'd', b'o', b'b', b'e', 0, 100, 0, 0, 0, 0, 1]);
         assert!(read_header(&adobe).unwrap().adobe);
+    }
+
+    #[test]
+    fn cmyk_ycck_adobe_and_untransformed_jpegs_keep_their_full_colour() {
+        let plain = jfif(0xC0, 8);
+        assert_eq!(read_header(&plain).unwrap().components, 1);
+        assert!(!full_colour_only(&plain, None));
+        assert!(!full_colour_only(&plain, Some(1)));
+        assert!(full_colour_only(&plain, Some(0)), "/ColorTransform 0");
+        let mut adobe = plain.clone();
+        adobe.splice(2..2, [0xFF, 0xEE, 0, 14, b'A', b'd', b'o', b'b', b'e', 0, 100, 0, 0, 0, 0, 1]);
+        assert!(full_colour_only(&adobe, None), "Adobe APP14");
+        // Four components (CMYK or YCCK): the frame's component count, then four component specs.
+        let mut four = vec![0xFF, 0xD8, 0xFF, 0xC0, 0, 20, 8, 0, 4, 0, 4, 4];
+        four.extend([1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 4, 0x11, 0]);
+        four.extend([0xFF, 0xDA, 0, 8, 1, 1, 0, 0, 63, 0]);
+        assert_eq!(read_header(&four).unwrap().components, 4);
+        assert!(full_colour_only(&four, None), "four components");
+        assert!(full_colour_only(&plain[..12], None), "markers that can't be read");
     }
 
     #[test]
