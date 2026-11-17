@@ -8,6 +8,11 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# PdfCraft patch: `RenderConfig::scenes`, pages recorded as vello_hybrid scenes for a caller's
+# scene target (a GPU) to draw, the CPU drawing what they can't. Off by default.
+scenes = ["hayro/hybrid"]
+
 [dependencies]
 pdfcraft-cos = { workspace = true }
 pdfcraft-fonts = { workspace = true }

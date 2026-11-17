@@ -34,6 +34,11 @@ use hayro::{RenderCache, RenderSettings, render_into, render_size};
 use crate::{Pixels, ReadingColors};
 
 mod pool;
+// PdfCraft patch: pages drawn by a scene target (a GPU).
+#[cfg(feature = "scenes")]
+mod scenes;
+#[cfg(feature = "scenes")]
+pub use scenes::{SceneTarget, Scenes};
 
 use pool::lock;
 #[cfg(test)]
@@ -103,6 +108,10 @@ pub struct RenderConfig {
     /// prints its layers differently from how they are shown (the Print event's auto state, ISO
     /// 32000-2 §8.11.4.4): the preview shows the page as it prints. `None`: previews use `layers`.
     pub print_layers: Option<Arc<Vec<(i32, i32, bool)>>>,
+    /// Pages are drawn by this scene target (a GPU) where it draws them exactly, and by the CPU
+    /// otherwise; never for printing. Display only. PdfCraft patch, feature `scenes`.
+    #[cfg(feature = "scenes")]
+    pub scenes: Option<Scenes>,
 }
 
 impl RenderConfig {
@@ -266,8 +275,11 @@ pub struct RenderedPage {
     pub request: RenderRequest,
     pub width: u32,
     pub height: u32,
-    /// Premultiplied RGBA8, row-major. Empty when `error` is set.
+    /// Premultiplied RGBA8, row-major. Empty when `error` is set, or when `native` holds the page.
     pub rgba: Pixels,
+    /// What a scene target drew for the page in place of `rgba` (`RenderConfig::scenes`).
+    #[cfg(feature = "scenes")]
+    pub native: Option<Native>,
     /// Why the page could not be rendered (renderer panic, empty page box, …).
     pub error: Option<String>,
     /// For `RequestKind::Text`.
@@ -377,7 +389,18 @@ pub fn device_pixels(pt: f32, scale: f32) -> u32 {
 
 /// Render one page with a caller-owned parser and cache. Panics inside the renderer are caught
 /// and reported as `Err((message, panicked))`.
-type Output = (u32, u32, Pixels, Option<Arc<crate::text::PageText>>);
+type Output = (u32, u32, Pixels, Option<Arc<crate::text::PageText>>, Option<Native>);
+
+/// What a scene target drew for a page (`RenderedPage::native`): for the caller to downcast to
+/// its own type. PdfCraft patch, feature `scenes`.
+#[derive(Clone)]
+pub struct Native(pub Arc<dyn std::any::Any + Send + Sync>);
+
+impl std::fmt::Debug for Native {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Native(..)")
+    }
+}
 
 fn render_page<'a>(
     pdf: &'a Pdf,
@@ -414,7 +437,7 @@ fn render_page<'a>(
     let reading = request_reading(config, &req);
     if req.kind == RequestKind::Text {
         return match catch_unwind(AssertUnwindSafe(|| crate::text::extract_page(pdf, req.page, settings))) {
-            Ok(Some(t)) => Ok((0, 0, Pixels::default(), Some(Arc::new(t)))),
+            Ok(Some(t)) => Ok((0, 0, Pixels::default(), Some(Arc::new(t)), None)),
             Ok(None) => Err((format!("page {} does not exist", req.page + 1), false)),
             Err(panic) => Err((format!("text extraction crashed on page {}: {}", req.page + 1, panic_message(&panic)), true)),
         };
@@ -478,14 +501,22 @@ fn render_page<'a>(
         if u64::from(w).checked_mul(u64::from(h)).is_none_or(|pixels| pixels > MAX_PIXELS as u64) {
             return Err(format!("page {} raster size {w}x{h} exceeds renderer pixel limit", req.page + 1));
         }
-        let mut pixels = Pixels::zeroed(w.into(), h.into()).ok_or_else(|| format!("page {} is too large to render", req.page + 1))?;
         // Previews render at low detail (tiny images are skipped); finals always draw all.
         let mut preview_settings = settings.clone();
         preview_settings.preview = req.preview;
         // A print preview shows what prints, and printing is not the View event.
         preview_settings.view_auto_state &= req.tag & PRINT_TAG == 0;
+        // PdfCraft patch: a scene target draws the page when it can; printing never uses one.
+        #[cfg(feature = "scenes")]
+        if !print
+            && let Some(scenes) = &config.scenes
+            && let Some(native) = scenes.draw(req.page, page, cache, &preview_settings, &rs)
+        {
+            return Ok((w.into(), h.into(), Pixels::default(), None, Some(native)));
+        }
+        let mut pixels = Pixels::zeroed(w.into(), h.into()).ok_or_else(|| format!("page {} is too large to render", req.page + 1))?;
         render_into(page, cache, &preview_settings, &rs, pixels.bytes_mut());
-        Ok((w.into(), h.into(), pixels, None))
+        Ok((w.into(), h.into(), pixels, None, None))
     }));
     match result {
         Ok(Ok(v)) => Ok(v),
@@ -497,8 +528,34 @@ fn render_page<'a>(
 fn finish(req: RenderRequest, start: Stopwatch, r: Result<Output, (String, bool)>, warnings: Vec<RenderWarning>) -> RenderedPage {
     let millis = start.millis();
     match r {
-        Ok((width, height, rgba, text)) => RenderedPage { request: req, width, height, rgba, error: None, text, warnings, millis },
-        Err((e, _)) => RenderedPage { request: req, width: 0, height: 0, rgba: Pixels::default(), error: Some(e), text: None, warnings, millis },
+        Ok((width, height, rgba, text, native)) => {
+            #[cfg(not(feature = "scenes"))]
+            let _ = native;
+            RenderedPage {
+                request: req,
+                width,
+                height,
+                rgba,
+                #[cfg(feature = "scenes")]
+                native,
+                error: None,
+                text,
+                warnings,
+                millis,
+            }
+        }
+        Err((e, _)) => RenderedPage {
+            request: req,
+            width: 0,
+            height: 0,
+            rgba: Pixels::default(),
+            #[cfg(feature = "scenes")]
+            native: None,
+            error: Some(e),
+            text: None,
+            warnings,
+            millis,
+        },
     }
 }
 

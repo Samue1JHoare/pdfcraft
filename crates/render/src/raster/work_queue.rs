@@ -315,6 +315,8 @@ mod tests {
             width: 1,
             height: 1,
             rgba: Pixels::from(vec![0u32; bytes / 4]),
+            #[cfg(feature = "scenes")]
+            native: None,
             error: None,
             text: None,
             warnings: Vec::new(),

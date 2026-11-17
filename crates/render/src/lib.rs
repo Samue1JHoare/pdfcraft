@@ -29,6 +29,13 @@ pub use raster::{
     MAX_PIXELS, MAX_SIDE, PRINT_TAG, PageRenderer, RenderConfig, RenderPool, RenderRequest, RenderStats, RenderWarning, RenderedPage, RequestKind,
     Retiring, Tile, device_pixels, effective_scale,
 };
+pub use raster::Native;
+/// PdfCraft patch: pages drawn by a scene target (a GPU); see `RenderConfig::scenes`.
+#[cfg(feature = "scenes")]
+pub use raster::{SceneTarget, Scenes};
+/// PdfCraft patch: the recorded page a [`SceneTarget`] draws, and the rasterizer it is for.
+#[cfg(feature = "scenes")]
+pub use hayro::{HybridPage, vello_hybrid};
 pub use reading::{ReadingColors, ReadingParams};
 pub use text::{PageText, TextGlyph};
 

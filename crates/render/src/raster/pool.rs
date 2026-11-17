@@ -383,6 +383,8 @@ impl RenderPool {
                 width: 0,
                 height: 0,
                 rgba: Pixels::default(),
+                #[cfg(feature = "scenes")]
+                native: None,
                 error: Some("all render workers exceeded their time limits; close and reopen the document to try again".into()),
                 text: None,
                 warnings: Vec::new(),
@@ -441,6 +443,8 @@ impl RenderPool {
                         width: 0,
                         height: 0,
                         rgba: Pixels::default(),
+                        #[cfg(feature = "scenes")]
+                        native: None,
                         error: Some(error),
                         text: None,
                         warnings: Vec::new(),
@@ -561,6 +565,8 @@ pub(super) fn worker(
                         width: 0,
                         height: 0,
                         rgba: Pixels::default(),
+                        #[cfg(feature = "scenes")]
+                        native: None,
                         error: Some(error),
                         text: None,
                         warnings: Vec::new(),
