@@ -39,6 +39,11 @@ mod pool;
 mod scenes;
 #[cfg(feature = "scenes")]
 pub use scenes::{SceneTarget, Scenes};
+// PdfCraft patch: pages drawn by the CPU into memory a caller lends.
+#[cfg(feature = "scenes")]
+mod pixel_target;
+#[cfg(feature = "scenes")]
+pub use pixel_target::{CpuTarget, PixelTarget};
 
 use pool::lock;
 #[cfg(test)]
@@ -112,6 +117,11 @@ pub struct RenderConfig {
     /// otherwise; never for printing. Display only. PdfCraft patch, feature `scenes`.
     #[cfg(feature = "scenes")]
     pub scenes: Option<Scenes>,
+    /// Pages the CPU draws are drawn into memory this target lends (an IOSurface a GUI shows),
+    /// returned as `RenderedPage::native`, instead of into `RenderedPage::rgba`; never for
+    /// printing. Display only. PdfCraft patch, feature `scenes`.
+    #[cfg(feature = "scenes")]
+    pub cpu_target: Option<CpuTarget>,
 }
 
 impl RenderConfig {
@@ -511,6 +521,15 @@ fn render_page<'a>(
         if !print
             && let Some(scenes) = &config.scenes
             && let Some(native) = scenes.draw(req.page, page, cache, &preview_settings, &rs)
+        {
+            return Ok((w.into(), h.into(), Pixels::default(), None, Some(native)));
+        }
+        // PdfCraft patch: the CPU draws into memory a pixel target lends, when it lends some;
+        // printing never uses one.
+        #[cfg(feature = "scenes")]
+        if !print
+            && let Some(target) = &config.cpu_target
+            && let Some(native) = target.draw(w.into(), h.into(), &mut |buf: &mut [u8]| render_into(page, cache, &preview_settings, &rs, buf))
         {
             return Ok((w.into(), h.into(), Pixels::default(), None, Some(native)));
         }

@@ -9944,6 +9944,10 @@ mod failed_image_decodes;
 // A page past its rasterizer coverage leaves the rest out and says so (vendored vello_cpu patch 1).
 mod coverage_budget;
 
+// A pixel target lends the memory the CPU draws a page into (PdfCraft patch, feature `scenes`).
+#[cfg(feature = "scenes")]
+mod pixel_target;
+
 // A symbolic TrueType font draws through its (3, 0) cmap subtable first (#4156).
 mod symbolic_truetype_cmap;
 

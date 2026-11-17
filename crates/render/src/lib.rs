@@ -33,6 +33,9 @@ pub use raster::Native;
 /// PdfCraft patch: pages drawn by a scene target (a GPU); see `RenderConfig::scenes`.
 #[cfg(feature = "scenes")]
 pub use raster::{SceneTarget, Scenes};
+/// PdfCraft patch: pages the CPU draws into memory a caller lends; see `RenderConfig::cpu_target`.
+#[cfg(feature = "scenes")]
+pub use raster::{CpuTarget, PixelTarget};
 /// PdfCraft patch: the recorded page a [`SceneTarget`] draws, and the rasterizer it is for.
 #[cfg(feature = "scenes")]
 pub use hayro::{HybridPage, vello_hybrid};
