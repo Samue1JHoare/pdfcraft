@@ -115,7 +115,8 @@ pub(crate) struct DecodedImageCache {
 ///   `/BitsPerComponent`, filters, …) and its object (`obj`: the decryption key depends on it);
 /// - whether it is decoded as a mask, a stencil mask, raster or mask output, interpolation,
 ///   the decode target size (only for an image a JPX stream decodes, which is the only
-///   decode that reads it: PdfCraft patch 32), and preview or final quality;
+///   decode that reads it exactly: PdfCraft patch 32; a JPEG reads it as a reduction,
+///   `jpeg_reduction`, patch 107), and preview or final quality;
 /// - the default colour space drawn in place of the image's device space, if any (the cache
 ///   key of its object, PdfCraft patch 38): the same image can be drawn by resources with a
 ///   `/DefaultRGB` and by resources without one.
@@ -139,6 +140,10 @@ pub(crate) struct DecodedImageKey {
     /// PdfCraft patch (82): the size a soft mask far larger than where it is drawn was averaged
     /// down to (`ImageXObject::decoded_soft_mask`), `None` for a mask kept at its own size.
     pub(crate) shrunk_to: Option<(u32, u32)>,
+    /// PdfCraft patch (107): the reduction a JPEG image is decoded at (`hayro_syntax::dct_reduction`:
+    /// 1, 2, 4 or 8), 1 for any other image. A reduction, not the target, so every draw at one
+    /// reduction shares a decode, and none is served one smaller than it asked for.
+    pub(crate) jpeg_reduction: u32,
 }
 
 /// PdfCraft patch (91): what the budget charges for a failed decode, about what its key and

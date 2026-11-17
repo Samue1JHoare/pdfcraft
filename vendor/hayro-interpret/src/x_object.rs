@@ -699,7 +699,39 @@ impl<'a> ImageXObject<'a> {
             },
             preview: cache.preview,
             shrunk_to: None,
+            // PdfCraft patch (107): a JPEG image's decode depends on the target only through the
+            // reduction it is decoded at, so draws that share one share the decode.
+            jpeg_reduction: if uses_dct(&self.stream) {
+                hayro_syntax::dct_reduction(&self.decode_params(target_dimension))
+            } else {
+                1
+            },
         })
+    }
+
+    /// PdfCraft patch (107): the size a JPEG image is decoded for. A mask, or an image with a
+    /// mask, is decoded at full size: an image's `/Matte` is undone only with a mask of the
+    /// image's own size, and a mask's samples are matched to its image's grid.
+    fn dct_target(&self, target_dimension: Option<(u32, u32)>) -> Option<(u32, u32)> {
+        if uses_dct(&self.stream) && (self.is_mask || self.has_mask()) {
+            None
+        } else {
+            target_dimension
+        }
+    }
+
+    /// PdfCraft patch (107): what the filters are told about decoding this image at
+    /// `target_dimension`, the one place `decode_context` and `decode_key` take it from.
+    fn decode_params(&self, target_dimension: Option<(u32, u32)>) -> ImageDecodeParams {
+        let dict = self.stream.dict();
+        ImageDecodeParams {
+            is_indexed: self.color_space.as_ref().is_some_and(|cs| cs.is_indexed()),
+            bpc: dict.get::<u8>(BPC).or_else(|| dict.get::<u8>(BITS_PER_COMPONENT)),
+            num_components: self.color_space.as_ref().map(|c| c.num_components()),
+            target_dimension: self.dct_target(target_dimension),
+            width: self.width,
+            height: self.height,
+        }
     }
 
     /// PdfCraft patch (82): this soft mask (or `/Mask` image) for an image of `parent` samples
@@ -763,7 +795,9 @@ impl<'a> ImageXObject<'a> {
     /// Only the JPX filter decodes at a reduced resolution for a target size, in the image
     /// itself or in the soft mask or mask decoded with it; every other filter decodes the whole
     /// image whatever the target. Keyed by the target, a scan was decoded again at every zoom
-    /// step and kept once per zoom level; without it, one decode serves them all.
+    /// step and kept once per zoom level; without it, one decode serves them all. A JPEG reads
+    /// the target too, but only as a reduction of 1, 2, 4 or 8, which it is keyed by instead
+    /// (`DecodedImageKey::jpeg_reduction`, patch 107).
     fn decode_reads_target(&self) -> bool {
         let dict = self.stream.dict();
         uses_jpx(&self.stream)
@@ -903,6 +937,12 @@ fn uses_jpx(stream: &Stream<'_>) -> bool {
     uses_filter(stream, JPX_DECODE)
 }
 
+/// PdfCraft patch (107): whether `stream` is a JPEG (`/DCTDecode`, or `/DCT` in an inline image),
+/// whose decode reads the target size through `hayro_syntax::dct_reduction`.
+fn uses_dct(stream: &Stream<'_>) -> bool {
+    uses_filter(stream, DCT_DECODE) || uses_filter(stream, DCT_DECODE_ABBREVIATION)
+}
+
 /// PdfCraft patch (73): whether `stream` is JBIG2, so that what the page has left, which all of it
 /// shares, says something about why this stream failed.
 fn uses_jbig2(stream: &Stream<'_>) -> bool {
@@ -979,16 +1019,9 @@ fn decode_context<'a>(
         .get::<u8>(BPC)
         .or_else(|| dict.get::<u8>(BITS_PER_COMPONENT));
     let color_space = obj.color_space.clone();
-    let is_indexed = obj.color_space.as_ref().is_some_and(|cs| cs.is_indexed());
 
-    let decode_params = ImageDecodeParams {
-        is_indexed,
-        bpc: dict_bpc,
-        num_components: color_space.as_ref().map(|c| c.num_components()),
-        target_dimension,
-        width: obj.width,
-        height: obj.height,
-    };
+    // PdfCraft patch (107): built where the decoded-image cache key reads it too.
+    let decode_params = obj.decode_params(target_dimension);
 
     // PdfCraft patch (73): what refused an image decoded before this one says nothing about it,
     // whether or not its filters reach JBIG2.
