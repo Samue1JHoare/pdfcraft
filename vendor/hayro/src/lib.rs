@@ -61,7 +61,16 @@ use vello_cpu::{Level, Pixmap, RenderMode};
 
 // PdfCraft patch (32): what the renderer draws on.
 mod canvas;
+// PdfCraft patch (33): pages recorded for vello_hybrid.
+#[cfg(feature = "hybrid")]
+mod hybrid;
 mod renderer;
+use crate::canvas::Canvas;
+#[cfg(feature = "hybrid")]
+pub use hybrid::{HybridPage, MAX_DRAWS};
+/// PdfCraft patch (33): the GPU rasterizer [`render_scene`] records for.
+#[cfg(feature = "hybrid")]
+pub use vello_hybrid;
 /// PdfCraft patch: exported for its regression test.
 pub use renderer::{image_resampling_size, tiling_cell_pixels, tiling_cell_scale, usable_cell_scale};
 /// PdfCraft patch: exported for its regression test.
@@ -232,11 +241,6 @@ pub fn render_into<'a>(
     render_settings: &RenderSettings,
     buffer: &mut [u8],
 ) {
-    let (x_scale, y_scale) = (render_settings.x_scale, render_settings.y_scale);
-    let initial_transform = Affine::translate((-render_settings.x_offset as f64, -render_settings.y_offset as f64))
-        * Affine::scale_non_uniform(x_scale as f64, y_scale as f64)
-        * page.initial_transform(true).to_kurbo();
-
     let (pix_width, pix_height) = render_size(page, render_settings);
     let expected = (pix_width as usize)
         .checked_mul(pix_height as usize)
@@ -244,20 +248,7 @@ pub fn render_into<'a>(
     if expected != Some(buffer.len()) {
         return;
     }
-    let mut state = Context::new(
-        initial_transform,
-        Rect::new(0.0, 0.0, pix_width as f64, pix_height as f64),
-        &cache.interpreter_cache,
-        page.xref(),
-        interpreter_settings.clone(),
-    );
-
-    let vc_settings = vello_cpu::RenderSettings {
-        level: Level::new(),
-        num_threads: 0,
-        render_mode: RenderMode::OptimizeSpeed,
-    };
-
+    let vc_settings = cpu_settings();
     let mut device = Renderer::new(
         vello_cpu::RenderContext::new_with(pix_width, pix_height, vc_settings),
         cache,
@@ -268,6 +259,83 @@ pub fn render_into<'a>(
     if let Some(max) = render_settings.max_coverage {
         device.ctx.set_max_coverage(max);
     }
+
+    draw_page(page, cache, interpreter_settings, render_settings, &mut device);
+    // PdfCraft patch (31): what the rasterizer left out once its coverage was full (a page that
+    // paints the same content millions of times over) is content left out, said as such.
+    if device.ctx.coverage_full() {
+        (interpreter_settings.warning_sink)(hayro_interpret::InterpreterWarning::ContentTruncated);
+    }
+
+    let mut resources = vello_cpu::Resources::default();
+    device.ctx.render_to_buffer(
+        &mut resources,
+        buffer,
+        pix_width,
+        pix_height,
+        vc_settings.render_mode,
+    );
+}
+
+/// PdfCraft patch (33): the page of [`render_into`] recorded as a `vello_hybrid` scene of
+/// [`render_size`] pixels, to be rasterized on the GPU, or `Err` naming what the scene can't
+/// draw exactly (see [`hybrid`](crate::HybridPage) for the list), in which case the page should
+/// be drawn with [`render_into`]. Images are drawn as external textures, none wider or taller
+/// than `max_image_side`; see [`HybridPage::images`]. `max_coverage` has no effect: a scene
+/// holds at most [`MAX_DRAWS`] paths instead.
+#[cfg(feature = "hybrid")]
+pub fn render_scene<'a>(
+    page: &'a Page<'a>,
+    cache: &RenderCache<'a>,
+    interpreter_settings: &InterpreterSettings,
+    render_settings: &RenderSettings,
+    max_image_side: u16,
+) -> Result<HybridPage, &'static str> {
+    let (pix_width, pix_height) = render_size(page, render_settings);
+    if pix_width == 0 || pix_height == 0 {
+        return Err("empty page");
+    }
+    let mut device = Renderer::new(
+        hybrid::HybridCanvas::new(pix_width, pix_height, cpu_settings(), max_image_side),
+        cache,
+        render_settings.color_replacement,
+        interpreter_settings.preview,
+    );
+    draw_page(page, cache, interpreter_settings, render_settings, &mut device);
+    device.ctx.finish()
+}
+
+/// The settings `vello_cpu` renders a page (and its nested renders) with.
+fn cpu_settings() -> vello_cpu::RenderSettings {
+    vello_cpu::RenderSettings {
+        level: Level::new(),
+        num_threads: 0,
+        render_mode: RenderMode::OptimizeSpeed,
+    }
+}
+
+/// Draws `page` on the renderer's canvas: the background, then the page's content in its crop
+/// box and page group. PdfCraft patch (33): shared by [`render_into`] and `render_scene`, so both
+/// draw a page the same way.
+fn draw_page<'a, C: Canvas>(
+    page: &'a Page<'a>,
+    cache: &RenderCache<'a>,
+    interpreter_settings: &InterpreterSettings,
+    render_settings: &RenderSettings,
+    device: &mut Renderer<C>,
+) {
+    let (x_scale, y_scale) = (render_settings.x_scale, render_settings.y_scale);
+    let initial_transform = Affine::translate((-render_settings.x_offset as f64, -render_settings.y_offset as f64))
+        * Affine::scale_non_uniform(x_scale as f64, y_scale as f64)
+        * page.initial_transform(true).to_kurbo();
+    let (pix_width, pix_height) = (device.ctx.width(), device.ctx.height());
+    let mut state = Context::new(
+        initial_transform,
+        Rect::new(0.0, 0.0, pix_width as f64, pix_height as f64),
+        &cache.interpreter_cache,
+        page.xref(),
+        interpreter_settings.clone(),
+    );
 
     // PdfCraft patch (18): the page renders as one transparency group (the page group). Its
     // objects composite with an initially transparent backdrop, and the group is then put on
@@ -298,12 +366,7 @@ pub fn render_into<'a>(
         device.push_transparency_group(1.0, None, BlendMode::Normal);
     }
 
-    interpret_page(page, &mut state, &mut device);
-    // PdfCraft patch (31): what the rasterizer left out once its coverage was full (a page that
-    // paints the same content millions of times over) is content left out, said as such.
-    if device.ctx.coverage_full() {
-        (interpreter_settings.warning_sink)(hayro_interpret::InterpreterWarning::ContentTruncated);
-    }
+    interpret_page(page, &mut state, &mut *device);
 
     if !backdrop_inside {
         device.pop_transparency_group();
@@ -312,15 +375,6 @@ pub fn render_into<'a>(
     if backdrop_inside {
         device.pop_transparency_group();
     }
-
-    let mut resources = vello_cpu::Resources::default();
-    device.ctx.render_to_buffer(
-        &mut resources,
-        buffer,
-        pix_width,
-        pix_height,
-        vc_settings.render_mode,
-    );
 }
 
 // Just a convenience method for testing.

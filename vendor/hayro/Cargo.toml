@@ -34,6 +34,8 @@ default = [
 ]
 embed-cmaps = ["hayro-interpret/embed-cmaps"]
 embed-fonts = ["hayro-interpret/embed-fonts"]
+# PdfCraft patch (33): `render_scene`, pages recorded for vello_hybrid (GPU rasterization).
+hybrid = ["dep:vello_hybrid"]
 logging = ["hayro-interpret/logging"]
 
 [lib]
@@ -80,6 +82,14 @@ default-features = false
 version = "0.0.8"
 default-features = false
 features = ["std"]
+
+# PdfCraft patch (33): behind `hybrid`. Its `std` feature brings wgpu without a backend; the
+# caller that renders the scene picks the backend.
+[dependencies.vello_hybrid]
+version = "0.0.8"
+default-features = false
+features = ["std"]
+optional = true
 
 [dependencies.vello_cpu]
 version = "0.0.8"
