@@ -1,3 +1,4 @@
+use crate::canvas::Canvas;
 use crate::{ColorReplacement, RenderCache, derive_settings};
 use hayro_interpret::color::Color;
 use hayro_interpret::encode::EncodedShadingPattern;
@@ -836,8 +837,9 @@ pub fn set_cmyk_band_pixels(pixels: Option<u64>) {
     CMYK_BAND_PIXELS.with(|p| p.set(pixels.unwrap_or(MAX_CMYK_GROUP_PIXELS).max(1)));
 }
 
-pub(crate) struct Renderer {
-    pub(crate) ctx: RenderContext,
+/// PdfCraft patch (32): generic over the [`Canvas`] it draws on, `vello_cpu`'s by default.
+pub(crate) struct Renderer<C = RenderContext> {
+    pub(crate) ctx: C,
     /// PdfCraft patch: when set, solid text and line-art paint colours are remapped
     /// while rendering (the "reading colours" view setting).
     color_replacement: Option<ColorReplacement>,
@@ -957,7 +959,7 @@ enum ImagePixelFormat {
     Rgba,
 }
 
-impl Renderer {
+impl<C: Canvas> Renderer<C> {
     /// PdfCraft patch (22): whether the innermost transparency group is a knockout group.
     fn in_knockout(&self) -> bool {
         self.knockout.last().copied().unwrap_or(false)
@@ -990,15 +992,13 @@ impl Renderer {
     }
 
     pub(crate) fn new(
-        width: u16,
-        height: u16,
-        settings: RenderSettings,
+        ctx: C,
         cache: &RenderCache<'_>,
         color_replacement: Option<ColorReplacement>,
         preview: bool,
     ) -> Self {
         Self {
-            ctx: RenderContext::new_with(width, height, settings),
+            ctx,
             color_replacement,
             in_annotations: false,
             knockout: Vec::new(),
@@ -1069,6 +1069,10 @@ impl Renderer {
     }
 
     fn draw_image_with_alpha_mask(&mut self, image_data: ImageData, mut alpha_data: LumaData) {
+        // PdfCraft patch (32): asked before the mask is rendered.
+        if self.ctx.decline("image soft mask") {
+            return;
+        }
         // PdfCraft patch: mismatched masks need a dummy RGB staging image. Validate and
         // reserve it before creating/pushing any mask, so failure skips the whole image.
         let Some(len) = source_byte_len(alpha_data.width, alpha_data.height, 3, MAX_IMAGE_PIXELS)
@@ -1098,7 +1102,7 @@ impl Renderer {
             if x.length() < 1.0 || y.length() < 1.0 {
                 alpha_data.interpolate = true;
             }
-            let mut renderer = Self {
+            let mut renderer = Renderer {
                 ctx: RenderContext::new_with(
                     self.ctx.width(),
                     self.ctx.height(),
@@ -1642,7 +1646,7 @@ impl Renderer {
         if let Some(cell) = key.and_then(|key| self.tiling_cells.get(&key)) {
             return cell;
         }
-        let mut renderer = Self {
+        let mut renderer = Renderer {
             ctx: RenderContext::new_with(size.0, size.1, derive_settings(self.ctx.render_settings())),
             // PdfCraft patch: a pattern cell is painted as one artwork, so its content is never
             // remapped by the reading-colours setting.
@@ -1714,7 +1718,7 @@ impl Renderer {
         width: u16,
         height: u16,
     ) -> Option<Pixmap> {
-        let mut renderer = Self {
+        let mut renderer = Renderer {
             ctx: RenderContext::new_with(width, height, derive_settings(self.ctx.render_settings())),
             color_replacement: None,
             in_annotations: self.in_annotations,
@@ -2255,8 +2259,12 @@ impl Renderer {
     }
 }
 
-impl<'a> Device<'a> for Renderer {
+impl<'a, C: Canvas> Device<'a> for Renderer<C> {
     fn draw_image(&mut self, image: hayro_interpret::Image<'a, '_>, mut transform: Affine) {
+        // PdfCraft patch (32): nothing drawn on a canvas that declined counts; don't decode.
+        if !self.ctx.live() {
+            return;
+        }
         // PdfCraft patch (27): an image's pixels are converted to RGB before they reach the
         // device, so an ink pass has no tints for them; the group is drawn as before.
         if self.ink.pass.is_some() {
@@ -2477,6 +2485,11 @@ impl<'a> Device<'a> for Renderer {
     /// own CMYK), while erasing for a knockout group (the contents must clear, not paint), and
     /// for contents a pass has no tints for.
     fn draw_isolated_cmyk_group(&mut self, group: &hayro_interpret::CmykGroup<'a, '_>) -> bool {
+        // PdfCraft patch (32): asked before the ink passes are rendered; declined, the group
+        // counts as drawn, since the canvas draws nothing more of the page.
+        if self.ctx.decline("CMYK group") {
+            return true;
+        }
         if self.color_replacement.is_some() || self.ink.pass.is_some() || self.erasing {
             return false;
         }
@@ -2545,6 +2558,12 @@ impl<'a> Device<'a> for Renderer {
         } else {
             (opacity, mask, convert_blend_mode(blend_mode))
         };
+        // PdfCraft patch (32): asked before the group's soft mask is rendered.
+        let mask = if (mask.is_some() || layer_blend != peniko::BlendMode::default()) && self.ctx.decline("group soft mask or blend mode") {
+            None
+        } else {
+            mask
+        };
         let settings = *self.ctx.render_settings();
         let force_images_may_have_transparency = mask.is_some()
             || blend_mode != BlendMode::Normal
@@ -2599,6 +2618,10 @@ impl<'a> Device<'a> for Renderer {
     /// whole canvas, transparent where nothing was drawn): what is under their shape is cleared
     /// first (`knockout_shape`, the knockout erase pass) and the layer composites over it.
     fn set_knockout(&mut self) {
+        // PdfCraft patch (32).
+        if self.ctx.decline("knockout group") {
+            return;
+        }
         if let Some(top) = self.knockout.last_mut() {
             *top = true;
             self.ctx.set_blend_mode(knockout_blend_mode());
@@ -2686,6 +2709,10 @@ impl<'a> Device<'a> for Renderer {
     }
 
     fn set_soft_mask(&mut self, mask: Option<SoftMask<'_>>) {
+        // PdfCraft patch (32): asked before the mask is rendered.
+        if mask.is_some() && self.ctx.decline("soft mask") {
+            return;
+        }
         let settings = *self.ctx.render_settings();
         self.cur_mask = mask.map(|m| {
             let width = self.ctx.width();

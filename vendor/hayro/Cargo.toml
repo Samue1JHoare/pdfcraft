@@ -74,6 +74,13 @@ features = [
 ]
 default-features = false
 
+# PdfCraft patch (32): the `Canvas` trait names vello_common's filter type, which vello_cpu does
+# not re-export. Already in the tree through vello_cpu (and patched to the vendored copy).
+[dependencies.vello_common]
+version = "0.0.8"
+default-features = false
+features = ["std"]
+
 [dependencies.vello_cpu]
 version = "0.0.8"
 features = [

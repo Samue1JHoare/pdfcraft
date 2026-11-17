@@ -59,6 +59,8 @@ use vello_cpu::color::palette::css::TRANSPARENT;
 use vello_cpu::color::palette::css::WHITE;
 use vello_cpu::{Level, Pixmap, RenderMode};
 
+// PdfCraft patch (32): what the renderer draws on.
+mod canvas;
 mod renderer;
 /// PdfCraft patch: exported for its regression test.
 pub use renderer::{image_resampling_size, tiling_cell_pixels, tiling_cell_scale, usable_cell_scale};
@@ -257,9 +259,7 @@ pub fn render_into<'a>(
     };
 
     let mut device = Renderer::new(
-        pix_width,
-        pix_height,
-        vc_settings,
+        vello_cpu::RenderContext::new_with(pix_width, pix_height, vc_settings),
         cache,
         render_settings.color_replacement,
         interpreter_settings.preview,
