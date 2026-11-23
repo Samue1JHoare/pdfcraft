@@ -6,8 +6,7 @@
 //! draw exactly is declined, and the page is then drawn with `vello_cpu` instead:
 //!
 //! - masks (soft masks, image soft masks of another size than the image);
-//! - every blend but Normal source-over, so knockout groups (drawn with `Copy` and `DestOut`)
-//!   and blend modes;
+//! - knockout groups (drawn with `Copy` and `DestOut`, weighted by each shape's coverage);
 //! - CMYK groups (drawn in ink passes of their own);
 //! - an image used as the paint of a path rather than drawn as its rectangle (tiling patterns,
 //!   shading textures), and images wider or taller than the target allows;
@@ -123,6 +122,19 @@ impl HybridCanvas {
     }
 }
 
+impl HybridCanvas {
+    /// `draw` with the current blend mode: inside a blend layer of its own unless it is Normal.
+    fn blended(&mut self, draw: impl FnOnce(&mut Scene)) {
+        if self.blend_mode == BlendMode::default() {
+            draw(&mut self.scene);
+        } else {
+            self.scene.push_layer(None, Some(self.blend_mode), None, None, None);
+            draw(&mut self.scene);
+            self.scene.pop_layer();
+        }
+    }
+}
+
 impl Canvas for HybridCanvas {
     fn width(&self) -> u16 {
         self.scene.width()
@@ -176,10 +188,9 @@ impl Canvas for HybridCanvas {
         self.blend_mode
     }
     fn set_blend_mode(&mut self, blend_mode: BlendMode) {
+        // Drawn as a layer of its own around each draw (`blended`): the scene's own blend mode
+        // is lost on its fast path, which draws source-over.
         self.blend_mode = blend_mode;
-        if blend_mode != BlendMode::default() {
-            self.refuse("blend mode");
-        }
     }
     fn stroke(&self) -> &Stroke {
         self.scene.stroke()
@@ -199,7 +210,7 @@ impl Canvas for HybridCanvas {
             self.refuse("image paint on a path");
         }
         if self.draw() {
-            self.scene.fill_path(path);
+            self.blended(|s| s.fill_path(path));
         }
     }
     fn stroke_path(&mut self, path: &BezPath) {
@@ -207,7 +218,7 @@ impl Canvas for HybridCanvas {
             self.refuse("image paint on a path");
         }
         if self.draw() {
-            self.scene.stroke_path(path);
+            self.blended(|s| s.stroke_path(path));
         }
     }
     fn fill_rect(&mut self, rect: &Rect) {
@@ -215,7 +226,7 @@ impl Canvas for HybridCanvas {
             return;
         }
         let Some((pixmap, quality)) = self.image.as_ref().map(|i| (i.pixmap.clone(), i.quality)) else {
-            self.scene.fill_rect(rect);
+            self.blended(|s| s.fill_rect(rect));
             return;
         };
         let (width, height) = (pixmap.width(), pixmap.height());
@@ -232,14 +243,16 @@ impl Canvas for HybridCanvas {
         }
         let id =TextureId(self.images.len() as u64);
         self.images.push(pixmap);
-        self.scene.draw_texture_rects(
-            id,
-            quality,
-            [SampleRect {
-                source_region: RectU16::new(0, 0, width, height),
-                transform: Affine::IDENTITY,
-            }],
-        );
+        self.blended(|s| {
+            s.draw_texture_rects(
+                id,
+                quality,
+                [SampleRect {
+                    source_region: RectU16::new(0, 0, width, height),
+                    transform: Affine::IDENTITY,
+                }],
+            );
+        });
     }
     fn push_clip_path(&mut self, path: &BezPath) {
         if !self.dead() {
@@ -263,11 +276,9 @@ impl Canvas for HybridCanvas {
             self.refuse("mask");
         } else if filter.is_some() {
             self.refuse("filter");
-        } else if blend_mode.is_some_and(|b| b != BlendMode::default()) {
-            self.refuse("blend mode");
         }
         if !self.dead() {
-            self.scene.push_layer(clip_path, None, opacity, None, None);
+            self.scene.push_layer(clip_path, blend_mode, opacity, None, None);
         }
     }
     fn push_clip_layer(&mut self, path: &BezPath) {

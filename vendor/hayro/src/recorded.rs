@@ -54,7 +54,8 @@ enum Op {
     Rect(Rect, Rect),
     PushClip(Arc<BezPath>),
     PopClip,
-    PushLayer(Option<Arc<BezPath>>, Option<f32>),
+    PushLayer(Option<Arc<BezPath>>, Option<PenikoBlend>, Option<f32>),
+    Blend(PenikoBlend),
     PushClipLayer(Arc<BezPath>),
     PopLayer,
 }
@@ -181,9 +182,7 @@ impl Canvas for Recorder {
     }
     fn set_blend_mode(&mut self, blend_mode: PenikoBlend) {
         self.blend_mode = blend_mode;
-        if blend_mode != PenikoBlend::default() {
-            self.refuse("blend mode");
-        }
+        self.push(Op::Blend(blend_mode));
     }
     fn stroke(&self) -> &Stroke {
         &self.stroke
@@ -231,11 +230,9 @@ impl Canvas for Recorder {
             self.refuse("mask");
         } else if filter.is_some() {
             self.refuse("filter");
-        } else if blend_mode.is_some_and(|b| b != PenikoBlend::default()) {
-            self.refuse("blend mode");
         }
         let clip = clip_path.map(|p| self.path(p));
-        self.push(Op::PushLayer(clip, opacity));
+        self.push(Op::PushLayer(clip, blend_mode, opacity));
     }
     fn push_clip_layer(&mut self, path: &BezPath) {
         let path = self.path(path);
@@ -333,7 +330,8 @@ pub fn render_recorded(
             Op::StrokePath(path) => canvas.stroke_path(path),
             Op::PushClip(path) => canvas.push_clip_path(path),
             Op::PopClip => canvas.pop_clip_path(),
-            Op::PushLayer(clip, opacity) => canvas.push_layer(clip.as_deref(), None, *opacity, None, None),
+            Op::PushLayer(clip, blend, opacity) => canvas.push_layer(clip.as_deref(), *blend, *opacity, None, None),
+            Op::Blend(b) => canvas.set_blend_mode(*b),
             Op::PushClipLayer(path) => canvas.push_clip_layer(path),
             Op::PopLayer => canvas.pop_layer(),
         }

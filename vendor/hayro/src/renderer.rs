@@ -2559,7 +2559,8 @@ impl<'a, C: Canvas> Device<'a> for Renderer<C> {
             (opacity, mask, convert_blend_mode(blend_mode))
         };
         // PdfCraft patch (32): asked before the group's soft mask is rendered.
-        let mask = if (mask.is_some() || layer_blend != peniko::BlendMode::default()) && self.ctx.decline("group soft mask or blend mode") {
+        // PdfCraft patch (34): blend modes are drawn on the GPU too, soft masks are not.
+        let mask = if mask.is_some() && self.ctx.decline("group soft mask") {
             None
         } else {
             mask
