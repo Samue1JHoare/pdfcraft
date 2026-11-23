@@ -520,7 +520,7 @@ fn render_page<'a>(
         #[cfg(feature = "scenes")]
         if !print
             && let Some(scenes) = &config.scenes
-            && let Some(native) = scenes.draw(req.page, page, cache, &preview_settings, &rs)
+            && let Some(native) = scenes.draw(req.page, req.tile.is_some(), page, cache, &preview_settings, &rs)
         {
             return Ok((w.into(), h.into(), Pixels::default(), None, Some(native)));
         }

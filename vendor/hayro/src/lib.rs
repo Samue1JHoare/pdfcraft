@@ -64,10 +64,15 @@ mod canvas;
 // PdfCraft patch (33): pages recorded for vello_hybrid.
 #[cfg(feature = "hybrid")]
 mod hybrid;
+// PdfCraft patch (34): a page read once, its GPU tiles replayed from it.
+#[cfg(feature = "hybrid")]
+mod recorded;
 mod renderer;
 use crate::canvas::Canvas;
 #[cfg(feature = "hybrid")]
 pub use hybrid::{HybridPage, MAX_DRAWS};
+#[cfg(feature = "hybrid")]
+pub use recorded::{PageRecording, record_page, render_recorded};
 /// PdfCraft patch (33): the GPU rasterizer [`render_scene`] records for.
 #[cfg(feature = "hybrid")]
 pub use vello_hybrid;
